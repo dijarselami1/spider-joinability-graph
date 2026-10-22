@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spider Joinability Explorer</title>
+<script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+<style>
+:root{
+  --bg:#f4f7fb; --panel:#ffffff; --line:#e2e8f0; --text:#17243a; --muted:#63748c;
+  --blue:#3568e8; --green:#1d9a6c; --orange:#d88c2d; --edge:#96aacb;
+}
+*{box-sizing:border-box} body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}
+.layout{display:grid;grid-template-columns:360px minmax(0,1fr);height:100vh}
+aside{background:var(--panel);border-right:1px solid var(--line);padding:20px;overflow:auto}
+main{display:flex;flex-direction:column;min-width:0}
+.top{background:var(--panel);border-bottom:1px solid var(--line);padding:14px 18px;display:flex;justify-content:space-between;gap:12px;align-items:center}
+.canvas{flex:1;min-height:0}.foot{background:var(--panel);border-top:1px solid var(--line);padding:9px 18px;font-size:12px;color:var(--muted)}
+#cy{height:100%;width:100%;background:#f8fbff}
+h1{font-size:20px;margin:0 0 6px} h2{font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:20px 0 8px}
+p{font-size:12px;line-height:1.5;color:var(--muted);margin:6px 0 10px}
+label{display:block;font-size:12px;font-weight:700;margin:10px 0 6px}
+input[type=file],input[type=text],select,input[type=number]{width:100%;padding:9px 10px;border:1px solid #d7dfeb;border-radius:10px;font-size:13px;background:#fff;color:var(--text)}
+input[type=range]{width:100%;accent-color:var(--blue)}
+button{border:0;border-radius:10px;padding:10px 12px;font-size:12px;font-weight:700;cursor:pointer}
+button.primary{background:var(--blue);color:#fff} button.secondary{background:#eaf0ff;color:#2c54b9} button.light{background:#fff;border:1px solid #dbe3ef;color:#2c3d57}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.buttons{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.buttons button{flex:1}
+.pill{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:#ebf2ff;color:#335fd8;font-size:11px;font-weight:800}
+.notice{background:#fff7e8;border:1px solid #f5e0ac;border-radius:12px;padding:10px;font-size:12px;color:#6f531f;line-height:1.45}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted)} .sw{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:-1px;margin-right:4px}
+#status{font-size:12px;color:#42546e;line-height:1.5}.stats{display:flex;gap:16px;flex-wrap:wrap}.stats b{color:#12355f}.help{font-size:11px;color:#72829b}.small{font-size:11px;color:#72829b}
+#details{font-size:12px;line-height:1.55;color:#33445f;white-space:normal;overflow-wrap:anywhere}
+pre{background:#f3f6fb;border:1px solid #e0e7f0;padding:10px;border-radius:10px;font-size:11px;overflow:auto}
+.hidden{display:none}
+@media(max-width:900px){.layout{grid-template-columns:1fr;grid-template-rows:auto minmax(520px,1fr);height:auto;min-height:100vh}aside{border-right:0;border-bottom:1px solid var(--line)}main{height:75vh}}
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside>
+    <h1>Joinability Graph Explorer</h1>
+    <p>Cleaner version: start with a <b>table graph</b>, then inspect the <b>column joins</b> on each edge.</p>
+
+    <div class="notice" id="demoNotice">
+      Right now this opens with a small example. Upload your real <code>predicted_column_edges.csv</code> to explore your actual Spider predictions.
+    </div>
+
+    <h2>1 · Data</h2>
+    <label for="file">Upload predicted edges CSV</label>
+    <input id="file" type="file" accept=".csv,text/csv">
+    <div class="help">Expected columns: <code>db_a, table_a, column_a, db_b, table_b, column_b, score</code></div>
+    <label for="metadataFile">Upload all Spider columns (CSV or JSON)</label>
+    <input id="metadataFile" type="file" accept=".csv,.json,text/csv,application/json">
+    <div class="help">CSV columns: <code>db,table,column</code> (or <code>db_id,table_name,column_name</code>). Alternatively, upload your <code>metadata/spider/columns.json</code>.</div>
+    <p id="metaStatus">Full metadata not loaded; only columns in predicted edges are available.</p>
+    <div class="buttons">
+      <button id="demo" class="secondary">Reset example</button>
+      <button id="fit" class="light">Fit view</button>
+    </div>
+
+    <h2>2 · What to show</h2>
+    <label for="viewMode">View mode</label>
+    <select id="viewMode">
+      <option value="table" selected>Table graph (recommended)</option>
+      <option value="column">Column graph</option>
+    </select>
+    <div class="help">Table mode is much easier to understand. Column mode is more detailed and more cluttered.</div>
+
+    <label><input type="checkbox" id="sameDbOnly" checked> Show same-database edges only</label>
+    <div class="help">Keeps the view cleaner and more realistic.</div>
+
+    <label for="search">Filter tables</label>
+    <input id="search" type="text" placeholder="Type part of a table name…">
+
+    <label>Seed table(s)</label>
+    <select id="seed1"></select>
+    <div style="height:6px"></div>
+    <select id="seed2"></select>
+    <div class="help">Choose one or two starting tables. The graph will show their local neighborhood.</div>
+
+    <label for="minScore">Minimum score: <b id="scoreLabel">0.52</b></label>
+    <input id="minScore" type="range" min="0" max="1" step="0.01" value="0.52">
+
+    <div class="row">
+      <div>
+        <label for="depth">Neighbor hops</label>
+        <select id="depth">
+          <option value="1">1 hop</option>
+          <option value="2" selected>2 hops</option>
+          <option value="3">3 hops</option>
+          <option value="99">Entire component</option>
+        </select>
+      </div>
+      <div>
+        <label for="maxNodes">Max nodes</label>
+        <select id="maxNodes">
+          <option value="40">40</option>
+          <option value="80" selected>80</option>
+          <option value="150">150</option>
+          <option value="300">300</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="buttons">
+      <button id="render" class="primary">Show graph</button>
+      <button id="overview" class="secondary">Overview</button>
+    </div>
+
+    <h2>3 · How to read it</h2>
+    <p><b>Table mode:</b> each node is a table. Each edge means your model found one or more column pairs that look joinable between those two tables.</p>
+    <p><b>Column mode:</b> each node is a column. This is the rawer representation.</p>
+    <p>Click a node or edge to see details.</p>
+
+    <h2>4 · Details</h2>
+    <div id="details">Nothing selected yet.</div>
+  </aside>
+
+  <main>
+    <div class="top">
+      <div>
+        <div class="pill" id="modePill">Example graph</div>
+        <div id="status">Loading…</div>
+      </div>
+      <div class="legend">
+        <span><i class="sw" style="background:#1d9a6c"></i>Seed</span>
+        <span><i class="sw" style="background:#3568e8"></i>Regular node</span>
+        <span><i class="sw" style="background:#d88c2d"></i>Neighbor</span>
+      </div>
+    </div>
+    <div class="canvas"><div id="cy"></div></div>
+    <div class="foot">Edge score = model-estimated joinability confidence. In table mode, a table edge aggregates one or more underlying column-to-column predictions.</div>
+  </main>
+</div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const example = [
+  ['concert_singer','singer','Singer_ID','concert_singer','singer_in_concert','Singer_ID',0.9206],
+  ['concert_singer','singer_in_concert','concert_ID','concert_singer','concert','concert_ID',0.9866],
+  ['concert_singer','concert','Stadium_ID','concert_singer','stadium','Stadium_ID',0.9507]
+].map((r,i)=>({db_a:r[0],table_a:r[1],column_a:r[2],db_b:r[3],table_b:r[4],column_b:r[5],score:r[6],idx:i}));
+
+let rawEdges = [], tableNames = [], metadataCols = [], cy = null, isDemo = true, overviewMode = false;
+const fullTable = (db,t) => `${db}.${t}`;
+const fullCol   = (db,t,c) => `${db}.${t}.${c}`;
+
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+
+function parseCSV(text){
+  let rows=[], row=[], field='', quote=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(c==='"'){
+      if(quote && text[i+1]==='"'){ field+='"'; i++; }
+      else quote=!quote;
+    } else if(c===',' && !quote){ row.push(field); field=''; }
+    else if((c==='\n' || c==='\r') && !quote){
+      if(c==='\r' && text[i+1]==='\n') i++;
+      row.push(field); field='';
+      if(row.some(v=>v.trim())) rows.push(row);
+      row=[];
+    } else field += c;
+  }
+  if(field || row.length){ row.push(field); rows.push(row); }
+  if(!rows.length) throw new Error('Empty CSV');
+  const head = rows.shift().map(v=>v.trim().replace(/^\uFEFF/,''));
+  const req = ['db_a','table_a','column_a','db_b','table_b','column_b','score'];
+  for(const k of req) if(!head.includes(k)) throw new Error('Missing column: ' + k);
+  return rows.map((r,i)=>{
+    const o={idx:i};
+    for(const k of req) o[k] = (r[head.indexOf(k)] || '').trim();
+    o.score = Number(o.score);
+    return o;
+  }).filter(x=>Number.isFinite(x.score) && x.db_a && x.db_b && x.table_a && x.table_b && x.column_a && x.column_b);
+}
+
+function extractMetadata(content, filename){
+  let rows=[];
+  if(filename.toLowerCase().endsWith('.json')){
+    const data=JSON.parse(content);
+    const arr=Array.isArray(data)?data:(Array.isArray(data.columns)?data.columns:Object.values(data).flat());
+    rows=arr.map(x=>({db:String(x.db??x.db_id??x.database??x.database_name??''),table:String(x.table??x.table_name??''),column:String(x.column??x.column_name??x.name??'')}));
+  }else{
+    const table=parseCSVGeneric(content);
+    rows=table.map(x=>({db:x.db??x.db_id??x.database??x.database_name??'',table:x.table??x.table_name??'',column:x.column??x.column_name??x.name??''}));
+  }
+  const out=[...new Map(rows.filter(x=>x.db&&x.table&&x.column).map(x=>[fullCol(x.db,x.table,x.column),{id:fullCol(x.db,x.table,x.column),table:fullTable(x.db,x.table),name:x.column}])).values()];
+  if(!out.length) throw Error('Could not find db/table/column records in metadata file. Export a CSV with db,table,column headers.');
+  return out;
+}
+function parseCSVGeneric(content){
+  let rows=[],r=[],v='',quoted=false;
+  for(let i=0;i<content.length;i++){
+    let c=content[i];
+    if(c==='"'){if(quoted&&content[i+1]==='"'){v+='"';i++}else quoted=!quoted}
+    else if(c===','&&!quoted){r.push(v);v=''}
+    else if((c==='\r'||c==='\n')&&!quoted){if(c==='\r'&&content[i+1]==='\n')i++;r.push(v);v='';if(r.some(x=>x.trim()))rows.push(r);r=[]}
+    else v+=c;
+  }
+  if(v||r.length){r.push(v);rows.push(r)}
+  const head=(rows.shift()||[]).map(x=>x.trim().replace(/^\uFEFF/,''));
+  return rows.map(r=>Object.fromEntries(head.map((h,i)=>[h,(r[i]||'').trim()])));
+}
+function updateMetaStatus(){
+  $('metaStatus').textContent=metadataCols.length?`${metadataCols.length.toLocaleString()} columns loaded from full metadata. Seed selection now includes all those columns.`:'Full metadata not loaded; only columns in predicted edges are available.';
+}
+function loadData(edges, demo){
+  isDemo = demo;
+  rawEdges = edges.map((e,i)=>({...e, idx:i, tableA:fullTable(e.db_a,e.table_a), tableB:fullTable(e.db_b,e.table_b), colA:fullCol(e.db_a,e.table_a,e.column_a), colB:fullCol(e.db_b,e.table_b,e.column_b)}));
+  tableNames = [...new Set([...rawEdges.flatMap(e=>[e.tableA, e.tableB]),...metadataCols.map(c=>c.table)])].sort();
+  $('demoNotice').classList.toggle('hidden', !demo);
+  $('modePill').textContent = demo ? 'Example graph' : 'Loaded CSV';
+  refreshSelectors();
+  render();
+}
+
+function refreshSelectors(){
+  const q = $('search').value.trim().toLowerCase();
+  const current1 = $('seed1').value;
+  const current2 = $('seed2').value;
+  const shown = tableNames.filter(t => t.toLowerCase().includes(q));
+  for(const [id, old, empty] of [['seed1', current1, false], ['seed2', current2, true]]){
+    const sel = $(id); sel.innerHTML='';
+    if(empty) sel.add(new Option('No second seed',''));
+    shown.forEach(t => sel.add(new Option(t,t)));
+    if(shown.includes(old)) sel.value = old;
+    else if(empty) sel.value='';
+  }
+  if(isDemo){ $('seed1').value = 'concert_singer.singer'; $('seed2').value = 'concert_singer.stadium'; }
+}
+
+function filteredEdges(){
+  const thr = Number($('minScore').value);
+  const sameDbOnly = $('sameDbOnly').checked;
+  return rawEdges.filter(e => e.score >= thr && (!sameDbOnly || e.db_a === e.db_b));
+}
+
+function aggregateTableEdges(edges){
+  const map = new Map();
+  for(const e of edges){
+    const [a,b] = e.tableA < e.tableB ? [e.tableA,e.tableB] : [e.tableB,e.tableA];
+    const key = a + '||' + b;
+    if(!map.has(key)) map.set(key, {source:a, target:b, score:-1, joins:[]});
+    const obj = map.get(key);
+    obj.joins.push(e);
+    if(e.score > obj.score) obj.score = e.score;
+  }
+  return [...map.values()].sort((x,y)=>y.score-x.score);
+}
+
+function neighborhoodFromGraph(nodesList, edgeList, seeds, maxNodes, depth){
+  const adj = new Map();
+  nodesList.forEach(n=>adj.set(n,[]));
+  edgeList.forEach(e=>{ adj.get(e.source)?.push(e); adj.get(e.target)?.push(e); });
+  const chosen = new Set();
+  const dist = new Map();
+  const q = [];
+  seeds.filter(Boolean).forEach(s=>{ if(adj.has(s)){ chosen.add(s); dist.set(s,0); q.push(s);} });
+
+  if(overviewMode || q.length===0){
+    for(const e of edgeList){ chosen.add(e.source); chosen.add(e.target); if(chosen.size >= maxNodes) break; }
+    return {chosen, dist};
+  }
+
+  for(let i=0; i<q.length && chosen.size < maxNodes; i++){
+    const cur = q[i], d = dist.get(cur);
+    if(d >= depth) continue;
+    const incident = (adj.get(cur)||[]).slice().sort((a,b)=>b.score-a.score);
+    for(const e of incident){
+      const nxt = e.source===cur ? e.target : e.source;
+      if(!dist.has(nxt)){
+        dist.set(nxt, d+1); chosen.add(nxt); q.push(nxt);
+        if(chosen.size >= maxNodes) break;
+      }
+    }
+  }
+  return {chosen, dist};
+}
+
+function buildTableView(edges){
+  const tableEdges = aggregateTableEdges(edges);
+  const allTables = [...new Set([...tableEdges.flatMap(e=>[e.source,e.target]),...metadataCols.map(x=>x.table)])];
+  const seeds = [$('seed1').value, $('seed2').value].filter(Boolean);
+  const {chosen, dist} = neighborhoodFromGraph(allTables, tableEdges, seeds, Number($('maxNodes').value), Number($('depth').value));
+  const elements = [];
+  const seedSet = new Set(seeds);
+  for(const t of chosen){
+    const shortName = t.split('.').slice(-1)[0];
+    elements.push({data:{id:t,label:shortName,full:t,seed:seedSet.has(t),hop:dist.get(t)||0}});
+  }
+  const visibleEdges = tableEdges.filter(e=>chosen.has(e.source)&&chosen.has(e.target));
+  for(let i=0;i<visibleEdges.length;i++){
+    const e = visibleEdges[i];
+    elements.push({data:{id:'te'+i,source:e.source,target:e.target,score:e.score,count:e.joins.length,joins:e.joins.map(j=>({db_a:j.db_a,table_a:j.table_a,column_a:j.column_a,db_b:j.db_b,table_b:j.table_b,column_b:j.column_b,score:j.score}))}});
+  }
+  return {elements, nodeCount:chosen.size, edgeCount:visibleEdges.length, totalEdges:tableEdges.length};
+}
+
+function buildColumnView(edges){
+  const allCols = [...new Set([...edges.flatMap(e=>[e.colA,e.colB]), ...metadataCols.map(c=>c.id)])];
+  const seedsTables = [$('seed1').value, $('seed2').value].filter(Boolean);
+  const colEdges = edges.map((e,i)=>({source:e.colA, target:e.colB, score:e.score, raw:e, id:'ce'+i}));
+
+  const seedCols = allCols.filter(c=> seedsTables.includes(c.split('.').slice(0,2).join('.')));
+  // A table is represented by ALL its columns. Membership links let us traverse
+  // from one column to another within the same table; these are NOT joins.
+  const colsByTable=new Map();
+  for(const c of allCols){const t=c.split('.').slice(0,2).join('.');if(!colsByTable.has(t)) colsByTable.set(t,[]);colsByTable.get(t).push(c)}
+  const membership=[];
+  for(const [t,cs] of colsByTable){for(let i=1;i<cs.length;i++) membership.push({source:cs[0],target:cs[i],score:1,internal:true,id:'mem:'+t+':'+i})}
+  const {chosen, dist} = neighborhoodFromGraph(allCols, [...colEdges,...membership], seedCols, Math.max(Number($('maxNodes').value),seedCols.length), Number($('depth').value));
+  const elements = [];
+  for(const c of chosen){
+    const parts = c.split('.');
+    const table = parts.slice(0,2).join('.');
+    const col = parts.slice(2).join('.');
+    elements.push({data:{id:c,label:col,table:table,full:c,seed:seedCols.includes(c),hop:dist.get(c)||0}});
+  }
+  const visibleEdges = colEdges.filter(e=>chosen.has(e.source)&&chosen.has(e.target));
+  visibleEdges.forEach(e=> elements.push({data:{id:e.id,source:e.source,target:e.target,score:e.score,raw:e.raw}}));
+  membership.filter(e=>chosen.has(e.source)&&chosen.has(e.target)).forEach(e=>elements.push({data:{id:e.id,source:e.source,target:e.target,internal:true}}));
+  return {elements, nodeCount:chosen.size, edgeCount:visibleEdges.length, totalEdges:colEdges.length};
+}
+
+function render(){
+  const mode = $('viewMode').value;
+  const edges = filteredEdges();
+  const built = mode === 'table' ? buildTableView(edges) : buildColumnView(edges);
+  if(cy) cy.destroy();
+  cy = cytoscape({
+    container: $('cy'),
+    elements: built.elements,
+    style: [
+      {selector:'node',style:{'background-color':'#3568e8','label':'data(label)','color':'#233953','font-size':11,'font-weight':700,'text-valign':'bottom','text-margin-y':8,'text-background-color':'#ffffff','text-background-opacity':0.92,'text-background-padding':2,'width': mode==='table' ? 30 : 16,'height': mode==='table' ? 30 : 16,'border-width':1.5,'border-color':'#dce5f1'}},
+      {selector:'node[seed = 1], node[seed = true]', style:{'background-color':'#1d9a6c','width': mode==='table' ? 40 : 22,'height': mode==='table' ? 40 : 22,'border-width':3,'border-color':'#106847'}},
+      {selector:'node[hop > 0]',style:{'background-color':'#d88c2d'}},
+      {selector:'edge',style:{'line-color':'#99add0','width':'mapData(score,0,1,1.3,6)','opacity':0.78,'curve-style':'bezier','target-arrow-shape':'none','label': mode==='table' ? 'data(count)' : '', 'font-size':10, 'color':'#465c7e', 'text-background-color':'#ffffff', 'text-background-opacity':0.8, 'text-background-padding':2}},
+      {selector:'edge[internal]',style:{'line-color':'#d4dce9','line-style':'dashed','width':1,'opacity':0.45,'label':''}},
+      {selector:'node:selected',style:{'border-width':4,'border-color':'#162f75'}},
+      {selector:'edge:selected',style:{'line-color':'#1248ce','width':7,'opacity':1}}
+    ],
+    layout:{name:'cose', animate:false, randomize:false, nodeRepulsion: mode==='table' ? 12000 : 7000, idealEdgeLength: mode==='table' ? 130 : 100, gravity:0.22, numIter:700},
+    wheelSensitivity:0.18,
+    minZoom:0.05,
+    maxZoom:5
+  });
+
+  cy.on('tap','node', evt => {
+    const d = evt.target.data();
+    if(mode==='table'){
+      const incident = evt.target.connectedEdges().map(e=>({other:e.source().id()===d.id?e.target().id():e.source().id(), score:e.data('score'), count:e.data('count')})).sort((a,b)=>b.score-a.score);
+      $('details').innerHTML = `<b>Table</b><br>${esc(d.full)}<br><br><b>What this means</b><br>This node is one table. The lines around it show other tables that have at least one predicted joinable column pair with it.<br><br><b>Visible neighboring tables</b><br>${incident.length?incident.slice(0,12).map(x=>`${esc(x.other)} · best score <b>${x.score.toFixed(3)}</b> · ${x.count} column pair(s)`).join('<br>'):'None'}`;
+    } else {
+      $('details').innerHTML = `<b>Column</b><br>${esc(d.full)}<br><br><b>Table</b><br>${esc(d.table)}<br><br>This node is a single column in the graph. It may have no predicted joins.`;
+    }
+  });
+
+  cy.on('tap','edge', evt => {
+    const d = evt.target.data();
+    if(d.internal){ $('details').innerHTML='<b>Same table</b><br>Dashed lines mean the two columns belong to the same table. This is NOT a predicted join.';return; }
+    if(mode==='table'){
+      const joins = (d.joins || []).slice().sort((a,b)=>b.score-a.score);
+      $('details').innerHTML = `<b>Table edge</b><br>${esc(d.source)} ↔ ${esc(d.target)}<br><br><b>What this means</b><br>These two tables are connected because the model found <b>${joins.length}</b> joinable column pair(s) between them. The table-edge score is the <b>best</b> of those column-pair scores.<br><br><b>Best score</b><br>${Number(d.score).toFixed(4)}<br><br><b>Underlying column joins</b><br>${joins.slice(0,12).map(j=>`${esc(j.table_a)}.${esc(j.column_a)} ↔ ${esc(j.table_b)}.${esc(j.column_b)} · <b>${j.score.toFixed(4)}</b>`).join('<br>')}`;
+    } else {
+      const r = d.raw;
+      $('details').innerHTML = `<b>Column edge</b><br>${esc(r.db_a+'.'+r.table_a+'.'+r.column_a)}<br>↔<br>${esc(r.db_b+'.'+r.table_b+'.'+r.column_b)}<br><br><b>Joinability score</b><br>${Number(r.score).toFixed(6)}<br><br>This is one predicted join between two specific columns.`;
+    }
+  });
+
+  $('status').innerHTML = `<div class="stats"><span><b>${built.nodeCount.toLocaleString()}</b> shown nodes</span><span><b>${built.edgeCount.toLocaleString()}</b> shown edges</span><span><b>${built.totalEdges.toLocaleString()}</b> total edges above threshold</span></div>`;
+}
+
+$('file').addEventListener('change', async e => {
+  const f = e.target.files[0]; if(!f) return;
+  try{
+    const text = await f.text();
+    const parsed = parseCSV(text);
+    overviewMode = false;
+    $('search').value='';
+    loadData(parsed, false);
+    $('details').innerHTML = `Loaded <b>${parsed.length.toLocaleString()}</b> column-level predicted edges. Start in <b>Table graph</b> mode, choose seed tables, and click edges to inspect the underlying column joins.`;
+  }catch(err){ alert('Could not read CSV: ' + err.message); }
+});
+$('metadataFile').addEventListener('change',async e=>{
+  const file=e.target.files[0]; if(!file)return;
+  try{ metadataCols=extractMetadata(await file.text(),file.name); updateMetaStatus(); loadData(rawEdges,isDemo); $('details').innerHTML=`Loaded all ${metadataCols.length.toLocaleString()} columns. Pick your seed table and switch to column view to inspect every column.`; }
+  catch(err){alert('Could not read metadata: '+err.message)}
+});
+$('demo').onclick = ()=>{ $('search').value=''; $('minScore').value='0.52'; $('scoreLabel').textContent='0.52'; $('viewMode').value='table'; $('sameDbOnly').checked=true; overviewMode=false; loadData(example, true); $('details').innerHTML='Nothing selected yet.'; };
+$('fit').onclick = ()=> cy && cy.fit(undefined, 40);
+$('search').oninput = refreshSelectors;
+$('minScore').oninput = ()=> $('scoreLabel').textContent = Number($('minScore').value).toFixed(2);
+$('render').onclick = ()=> { overviewMode=false; render(); };
+$('overview').onclick = ()=> { overviewMode=true; render(); };
+$('viewMode').onchange = ()=> render();
+$('sameDbOnly').onchange = ()=> render();
+updateMetaStatus();loadData(example, true);
+$('details').innerHTML = `Start in <b>Table graph</b> mode. Green nodes are your seed tables. Click an edge to see which column pairs created that table-to-table connection.`;
+</script>
+</body>
+</html>
