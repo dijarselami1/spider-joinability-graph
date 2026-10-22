@@ -396,7 +396,38 @@ $('render').onclick = ()=> { overviewMode=false; render(); };
 $('overview').onclick = ()=> { overviewMode=true; render(); };
 $('viewMode').onchange = ()=> render();
 $('sameDbOnly').onchange = ()=> render();
+async function autoLoadRepositoryData(){
+  $('modePill').textContent='Loading Spider data…';
+  $('status').textContent='Loading predicted joins and column metadata…';
+  try {
+    const [edgesResponse, metadataResponse] = await Promise.all([
+      fetch('./predicted_column_edges.csv', {cache:'no-cache'}),
+      fetch('./columns.json', {cache:'no-cache'})
+    ]);
+    if(!edgesResponse.ok) throw Error('predicted_column_edges.csv: HTTP '+edgesResponse.status);
+    if(!metadataResponse.ok) throw Error('columns.json: HTTP '+metadataResponse.status);
+    const [edgesText, metadataText] = await Promise.all([edgesResponse.text(), metadataResponse.text()]);
+    const parsedEdges=parseCSV(edgesText);
+    if(!parsedEdges.length) throw Error('No valid predicted edges found');
+    metadataCols=extractMetadata(metadataText,'columns.json');
+    updateMetaStatus();
+    overviewMode=false;
+    $('search').value='';
+    loadData(parsedEdges,false);
+    if(tableNames.includes('concert_singer.singer') && tableNames.includes('concert_singer.stadium')){
+      $('seed1').value='concert_singer.singer';
+      $('seed2').value='concert_singer.stadium';
+      render();
+    }
+    $('details').innerHTML='Automatically loaded <b>'+parsedEdges.length.toLocaleString()+'</b> predicted column joins and <b>'+metadataCols.length.toLocaleString()+'</b> columns. Click a table edge to inspect the corresponding column joins.';
+  } catch(err){
+    loadData(example,true);
+    $('modePill').textContent='Example · automatic load failed';
+    $('details').textContent='Automatic data loading failed: '+err.message+'. You can still upload the files manually.';
+  }
+}
 updateMetaStatus();loadData(example, true);
+if(location.protocol==='https:' || location.protocol==='http:') autoLoadRepositoryData();
 $('details').innerHTML = `Start in <b>Table graph</b> mode. Green nodes are your seed tables. Click an edge to see which column pairs created that table-to-table connection.`;
 </script>
 </body>
